@@ -1,34 +1,89 @@
-name: Build Premium APK
-on: [push, workflow_dispatch]
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Unzip Project
-      run: unzip -o *.zip
-    - name: Setup JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: 8.9
-    - name: Build with Gradle
-      run: |
-        APP_DIR=$(find . -type d -name "app" | head -n 1)
-        PROJECT_ROOT=$(dirname "$APP_DIR")
-        cd "$PROJECT_ROOT"
-        echo "pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }" > settings.gradle
-        echo "dependencyResolutionManagement { repositories { google(); mavenCentral() } }" >> settings.gradle
-        echo "include ':app'" >> settings.gradle
-        echo "plugins { id 'com.android.application' version '8.7.3' apply false }" > build.gradle
-        echo "android.useAndroidX=true" > gradle.properties
-        gradle assembleDebug
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: BanglaQR-Premium-APK
-        path: '**/app-debug.apk'
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          set -e
+          ZIP=$(ls *.zip | head -n 1)
+          echo "Using $ZIP"
+          mkdir -p proj
+          unzip -o "$ZIP" -d proj
+          # যে ফোল্ডারে app/ আছে সেটা খুঁজে নেওয়া
+          ROOT=$(dirname "$(find proj -type d -name app -path '*/app' | head -n 1)")
+          echo "PROJ_ROOT=$ROOT" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download offline libraries (build time only)
+        run: |
+          set -e
+          A=$PROJ_ROOT/app/src/main/assets
+          curl -fL https://cdn.jsdelivr.net/npm/qr-code-styling@1.5.0/lib/qr-code-styling.js -o $A/lib_qr.js
+          curl -fL https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js -o $A/lib_barcode.js
+          curl -fL https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js -o $A/lib_jsqr.js
+          for f in lib_qr.js lib_barcode.js lib_jsqr.js; do test -s $A/$f || (echo "MISSING $f" && exit 1); done
+
+      - name: Obfuscate JavaScript
+        run: |
+          npm install --no-save javascript-obfuscator@4.1.0
+          cat > obf.js <<'EOF'
+          const fs = require('fs');
+          const O = require('javascript-obfuscator');
+          const f = process.env.PROJ_ROOT + '/app/src/main/assets/index.html';
+          let html = fs.readFileSync(f, 'utf8');
+          let done = false;
+          html = html.replace(/(<script id="app">)([\s\S]*?)(<\/script>)/, (m, a, code, c) => {
+            done = true;
+            const out = O.obfuscate(code, {
+              compact: true,
+              controlFlowFlattening: true,
+              controlFlowFlatteningThreshold: 0.4,
+              stringArray: true,
+              stringArrayEncoding: ['base64'],
+              stringArrayThreshold: 0.75,
+              renameGlobals: false,
+              identifierNamesGenerator: 'hexadecimal',
+              disableConsoleOutput: true
+            }).getObfuscatedCode();
+            return a + out + c;
+          });
+          if (!done) { console.error('script id=app not found'); process.exit(1); }
+          fs.writeFileSync(f, html);
+          EOF
+          node obf.js
+          rm obf.js
+
+      - name: Make signing key
+        run: |
+          keytool -genkeypair -keystore $PROJ_ROOT/app/release.jks -alias key0 -keyalg RSA -keysize 2048 \
+            -validity 10000 -storepass banglaqr123 -keypass banglaqr123 -dname "CN=Bangla QR Premium"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+
+      - name: Build release APK
+        working-directory: ${{ env.PROJ_ROOT }}
+        run: gradle assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BanglaQR-APK
+          path: ${{ env.PROJ_ROOT }}/app/build/outputs/apk/release/*.apk
