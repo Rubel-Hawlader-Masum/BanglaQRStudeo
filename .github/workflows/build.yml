@@ -1,89 +1,134 @@
-name: Build APK
+name: Build Bangla QR APK
 
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build release APK
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Unzip project
+      - name: Check ZIP file
         run: |
-          set -e
-          ZIP=$(ls *.zip | head -n 1)
-          echo "Using $ZIP"
-          mkdir -p proj
-          unzip -o "$ZIP" -d proj
-          # যে ফোল্ডারে app/ আছে সেটা খুঁজে নেওয়া
-          ROOT=$(dirname "$(find proj -type d -name app -path '*/app' | head -n 1)")
-          echo "PROJ_ROOT=$ROOT" >> $GITHUB_ENV
+          set -euo pipefail
+          ZIP="BanglaQR_fixed.zip"
 
-      - uses: actions/setup-java@v4
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: $ZIP পাওয়া যায়নি"
+            echo "Repository root-এ BanglaQR_fixed.zip আপলোড করুন"
+            exit 1
+          fi
+
+          echo "Using $ZIP"
+          echo "ZIP_SIZE=$(stat -c%s "$ZIP") bytes"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Download offline libraries (build time only)
-        run: |
-          set -e
-          A=$PROJ_ROOT/app/src/main/assets
-          curl -fL https://cdn.jsdelivr.net/npm/qr-code-styling@1.5.0/lib/qr-code-styling.js -o $A/lib_qr.js
-          curl -fL https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js -o $A/lib_barcode.js
-          curl -fL https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js -o $A/lib_jsqr.js
-          for f in lib_qr.js lib_barcode.js lib_jsqr.js; do test -s $A/$f || (echo "MISSING $f" && exit 1); done
-
-      - name: Obfuscate JavaScript
-        run: |
-          npm install --no-save javascript-obfuscator@4.1.0
-          cat > obf.js <<'EOF'
-          const fs = require('fs');
-          const O = require('javascript-obfuscator');
-          const f = process.env.PROJ_ROOT + '/app/src/main/assets/index.html';
-          let html = fs.readFileSync(f, 'utf8');
-          let done = false;
-          html = html.replace(/(<script id="app">)([\s\S]*?)(<\/script>)/, (m, a, code, c) => {
-            done = true;
-            const out = O.obfuscate(code, {
-              compact: true,
-              controlFlowFlattening: true,
-              controlFlowFlatteningThreshold: 0.4,
-              stringArray: true,
-              stringArrayEncoding: ['base64'],
-              stringArrayThreshold: 0.75,
-              renameGlobals: false,
-              identifierNamesGenerator: 'hexadecimal',
-              disableConsoleOutput: true
-            }).getObfuscatedCode();
-            return a + out + c;
-          });
-          if (!done) { console.error('script id=app not found'); process.exit(1); }
-          fs.writeFileSync(f, html);
-          EOF
-          node obf.js
-          rm obf.js
-
-      - name: Make signing key
-        run: |
-          keytool -genkeypair -keystore $PROJ_ROOT/app/release.jks -alias key0 -keyalg RSA -keysize 2048 \
-            -validity 10000 -storepass banglaqr123 -keypass banglaqr123 -dname "CN=Bangla QR Premium"
-
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
 
+      - name: Extract Android project
+        run: |
+          set -euo pipefail
+
+          rm -rf proj
+          mkdir -p proj
+
+          unzip -q -o BanglaQR_fixed.zip -d proj
+
+          ROOT="$(dirname "$(find proj -type d -name app -path '*/app' -print -quit)")"
+
+          if [ -z "$ROOT" ] || [ ! -f "$ROOT/app/build.gradle" ]; then
+            echo "ERROR: ZIP-এর মধ্যে Android project পাওয়া যায়নি"
+            find proj -maxdepth 5 -type f | sort | head -100
+            exit 1
+          fi
+
+          echo "PROJ_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Android project root: $ROOT"
+
+      - name: Verify project assets
+        run: |
+          set -euo pipefail
+
+          A="$PROJ_ROOT/app/src/main/assets"
+
+          for FILE in index.html lib_qr.js lib_barcode.js lib_jsqr.js; do
+            if [ ! -s "$A/$FILE" ]; then
+              echo "ERROR: missing asset $A/$FILE"
+              exit 1
+            fi
+          done
+
+          echo "All required offline assets are present"
+
+      - name: Create CI signing key
+        working-directory: ${{ env.PROJ_ROOT }}
+        run: |
+          set -euo pipefail
+
+          rm -f app/release.jks
+
+          keytool -genkeypair -v \
+            -keystore app/release.jks \
+            -alias key0 \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass banglaqr123 \
+            -keypass banglaqr123 \
+            -dname "CN=Bangla QR Premium"
+
+          chmod 600 app/release.jks
+
       - name: Build release APK
         working-directory: ${{ env.PROJ_ROOT }}
-        run: gradle assembleRelease --no-daemon
+        run: |
+          set -euo pipefail
+          gradle assembleRelease --no-daemon --stacktrace
 
-      - uses: actions/upload-artifact@v4
+      - name: Check generated APK
+        working-directory: ${{ env.PROJ_ROOT }}
+        run: |
+          set -euo pipefail
+
+          APK_COUNT=$(find app/build/outputs/apk/release \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: APK তৈরি হয়নি"
+            exit 1
+          fi
+
+          find app/build/outputs/apk/release \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            -print \
+            -exec ls -lh {} \;
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
           name: BanglaQR-APK
           path: ${{ env.PROJ_ROOT }}/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
