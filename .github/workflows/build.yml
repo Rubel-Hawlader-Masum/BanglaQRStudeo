@@ -6,14 +6,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Unzip Project
-      run: unzip BanglaQRStudio_Android.zip
+      run: unzip -o BanglaQRStudio_Android.zip
     - name: Create Root Files
       run: |
-        if [ -d "BanglaQRStudio_Android" ]; then cd BanglaQRStudio_Android; fi
+        cd BanglaQRStudio_Android
         echo "pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }" > settings.gradle
         echo "dependencyResolutionManagement { repositories { google(); mavenCentral() } }" >> settings.gradle
         echo "include ':app'" >> settings.gradle
-        echo "plugins { id 'com.android.application' version '8.6.1' apply false }" > build.gradle
+        echo "plugins { id 'com.android.application' version '8.7.3' apply false }" > build.gradle
         echo "android.useAndroidX=true" > gradle.properties
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -23,10 +23,10 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
-        gradle-version: 8.7
+        gradle-version: 8.9
     - name: Build with Gradle
       run: |
-        if [ -d "BanglaQRStudio_Android" ]; then cd BanglaQRStudio_Android; fi
+        cd BanglaQRStudio_Android
         gradle assembleDebug
     - name: Upload APK
       uses: actions/upload-artifact@v4
