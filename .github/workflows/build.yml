@@ -21,13 +21,11 @@ jobs:
         run: |
           set -euo pipefail
           ZIP="BanglaQR_fixed.zip"
-
           if [ ! -f "$ZIP" ]; then
             echo "ERROR: $ZIP পাওয়া যায়নি"
             echo "Repository root-এ BanglaQR_fixed.zip আপলোড করুন"
             exit 1
           fi
-
           echo "Using $ZIP"
           echo "ZIP_SIZE=$(stat -c%s "$ZIP") bytes"
 
@@ -38,22 +36,19 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Set up Gradle 8.5
+      - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.5'
+          gradle-version: '8.7'
 
       - name: Extract Android project
         run: |
           set -euo pipefail
-
           rm -rf proj
           mkdir -p proj
-
           unzip -q -o BanglaQR_fixed.zip -d proj
 
           ROOT="$(dirname "$(find proj -type d -name app -path '*/app' -print -quit)")"
-
           if [ -z "$ROOT" ] || [ ! -f "$ROOT/app/build.gradle" ]; then
             echo "ERROR: ZIP-এর মধ্যে Android project পাওয়া যায়নি"
             find proj -maxdepth 5 -type f | sort | head -100
@@ -66,25 +61,20 @@ jobs:
       - name: Verify project assets
         run: |
           set -euo pipefail
-
           A="$PROJ_ROOT/app/src/main/assets"
-
           for FILE in index.html lib_qr.js lib_barcode.js lib_jsqr.js; do
             if [ ! -s "$A/$FILE" ]; then
               echo "ERROR: missing asset $A/$FILE"
               exit 1
             fi
           done
-
           echo "All required offline assets are present"
 
       - name: Create CI signing key
         working-directory: ${{ env.PROJ_ROOT }}
         run: |
           set -euo pipefail
-
           rm -f app/release.jks
-
           keytool -genkeypair -v \
             -keystore app/release.jks \
             -alias key0 \
@@ -94,7 +84,6 @@ jobs:
             -storepass banglaqr123 \
             -keypass banglaqr123 \
             -dname "CN=Bangla QR Premium"
-
           chmod 600 app/release.jks
 
       - name: Build release APK
@@ -107,23 +96,12 @@ jobs:
         working-directory: ${{ env.PROJ_ROOT }}
         run: |
           set -euo pipefail
-
-          APK_COUNT=$(find app/build/outputs/apk/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' | wc -l)
-
+          APK_COUNT=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | wc -l)
           if [ "$APK_COUNT" -eq 0 ]; then
             echo "ERROR: APK তৈরি হয়নি"
             exit 1
           fi
-
-          find app/build/outputs/apk/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            -print \
-            -exec ls -lh {} \;
+          find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -exec ls -lh {} \;
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
